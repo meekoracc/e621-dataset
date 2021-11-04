@@ -1,0 +1,14 @@
+version: '3.8'
+services:
+  mongo:
+    image: mongo
+    container_name: mongo
+    ports:
+      - "127.0.0.1:27017:27017"
+  
+  mongo-express:
+    image: mongo-express
+    depends_on:
+      - mongo
+    ports:
+      - "127.0.0.1:8888:8081"
