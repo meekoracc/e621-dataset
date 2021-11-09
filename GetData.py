@@ -20,8 +20,16 @@ headers = {
 auth = None
 
 # Remove superfluous information from the json body returned
-def clean_posts(body):
-  out = body['posts']
+def clean_posts(body: pd.DataFrame):
+  body.drop(
+    ['sample', 'sources', 'pools', 
+     'relationships', 'approver_id',
+     'uploader_id', 'description', 
+     'comment_count', 'is_favorited', 
+     'has_notes', 'duration', 'preview',
+     'change_seq', 'flags', 'locked_tags'], axis=1, inplace=True)
+  logging.debug(body.columns)
+  logging.debug(f'\n{body["tags"].iloc[0]}')
   
 # Connect to the locally running mongo instance for saving records
 def connect_to_mongo():
@@ -51,7 +59,12 @@ async def get_tags(db: pymongo.database.Database):
   }
 
   tags = db.get_collection('tags')
-  #TODO Get largest tag id from collection if it exists and continue from there
+  # Get largest tag id from collection if it exists and continue from there
+  largest = tags.find().sort("_id", -1).limit(1).next()['_id']
+
+  logging.debug(f'Largest id already here {largest}')
+
+  params['page'] = 'a' + str(largest)
 
   logging.info("Retrieving Tags")
 
@@ -79,15 +92,19 @@ async def get_tags(db: pymongo.database.Database):
     # Clean DataFrame a bit
     response.drop(['related_tags', 'related_tags_updated_at','is_locked'], axis=1, inplace=True)
 
-    logging.debug("Got {0} records".format(len(response)))
+    logging.debug(f"Got {len(response)} records")
     logging.debug(response.head())
 
     last_count = insert_records(response, tags)
 
-    count += last_count
+    # If MAX_TAGS unset then collect everything possible
+    if MAX_TAGS == 0:
+      count = -1
+    else:
+      count += last_count
 
     #Update params with new page
-    logging.debug("Last index retrieved {0}".format(response['_id'].max()))
+    logging.debug(f"Last index retrieved {response['_id'].max()}")
     params['page'] = 'a' + str(response['_id'].max())
 
     await asyncio.sleep(1)
@@ -104,24 +121,36 @@ async def get_posts(db: pymongo.database.Database):
   }
 
   posts = db.get_collection('posts')
+  # TODO Get largest post id from collection if it exists and continue from there
 
-  MAX_POSTS = int(os.getenv('MAX_POSTS'))
+  logging.info("Retrieving Posts")
 
   count = 0
-  last_count = 0
-
-  while (count < MAX_POSTS) and (last_count < 320):
-    #Request 320 oldest posts + offset
-    response = requests.get(API_URL + POSTS_URL, auth=auth, headers=headers, params=params)
-
+  last_count = 320
+  MAX_POSTS = int(os.getenv('MAX_POSTS'))
+  # Get all posts and insert into MongoDB instance
+  while (count < MAX_POSTS) and (last_count == 320):
+    try:
+      # Retrieve max number of posts possible
+      response = requests.get(API_URL + POSTS_URL, auth=auth, headers=headers, params=params)
+      response.raise_for_status()
+    except response.HTTPError as http_err:
+      logging.error(f'HTTP error occurred: {http_err}')
+      raise http_err
+    except Exception as err:
+      print(f'Other error occurred: {err}')
+      raise err
+    # Create pandas df from result
     response = pd.DataFrame.from_dict(response.json()['posts'])
-
-    print(response.head())
+    response.rename(columns={'id':'_id'}, inplace=True)
+    
+    # Clean DataFrame
+    clean_posts(response)
 
     logging.debug("Retrieved {0} records".format(len(response)))
 
     #TODO Insert into database (MongoDB?)
-
+    break
     # Requests capped at 1/sec for "sustained period" so sleep for >= 1s
     await asyncio.sleep(1)
 
