@@ -76,6 +76,10 @@ async def get_tags(db: pymongo.database.Database):
         raise err
     # Create pandas df from result
     response = pd.DataFrame.from_dict(response.json())
+
+    if len(response) == 0:
+      return
+
     response.rename(columns={'id':'_id'}, inplace=True)
 
     # logging.debug(response.columns)
@@ -141,6 +145,10 @@ async def get_posts(db: pymongo.database.Database):
       raise err
     # Create pandas df from result
     response = pd.DataFrame.from_dict(response.json()['posts'])
+
+    if len(response) == 0:
+      return
+
     response.rename(columns={'id':'_id'}, inplace=True)
 
     logging.debug(f"Got {len(response)} records")
@@ -170,7 +178,6 @@ async def get_posts(db: pymongo.database.Database):
 
 # Remove superfluous information from the json body returned
 def clean_posts(body: pd.DataFrame):
-  logging.debug(body.head())
   body.drop(
     ['sample', 'sources', 'pools', 
      'relationships', 'approver_id',
@@ -179,7 +186,17 @@ def clean_posts(body: pd.DataFrame):
      'has_notes', 'duration', 'preview',
      'change_seq', 'flags', 'locked_tags'], axis=1, inplace=True)
   logging.debug(body.columns)
-  logging.debug(f'\n{body["tags"].iloc[0]}')
+
+  # Clean file part
+  logging.debug(f'File:\n{body["file"].iloc[0]}')
+  body['file'] = body['file'].astype(object)
+  body['url'] = [row['url'] for row in body['file']]
+  body['dims'] = [{'width': row['width'], 'height':row['height']} for row in body['file']]
+  body.drop(['file'], axis=1, inplace=True)
+
+  #TODO: Clean and reduce tags (e.g. use id and separate by category)
+  logging.debug(f'Tags:\n{body["tags"].iloc[0]}')
+  body['tags'] = body['tags'].astype(object)
 
 def insert_records(df: pd.DataFrame, collection: pymongo.collection.Collection):
   try:
