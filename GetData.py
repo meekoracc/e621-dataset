@@ -19,18 +19,6 @@ headers = {
 #Import API key and user token
 auth = None
 
-# Remove superfluous information from the json body returned
-def clean_posts(body: pd.DataFrame):
-  body.drop(
-    ['sample', 'sources', 'pools', 
-     'relationships', 'approver_id',
-     'uploader_id', 'description', 
-     'comment_count', 'is_favorited', 
-     'has_notes', 'duration', 'preview',
-     'change_seq', 'flags', 'locked_tags'], axis=1, inplace=True)
-  logging.debug(body.columns)
-  logging.debug(f'\n{body["tags"].iloc[0]}')
-  
 # Connect to the locally running mongo instance for saving records
 def connect_to_mongo():
   conn_str = "mongodb://localhost:27017/" #TODO modify for future docker compose file
@@ -60,11 +48,14 @@ async def get_tags(db: pymongo.database.Database):
 
   tags = db.get_collection('tags')
   # Get largest tag id from collection if it exists and continue from there
-  largest = tags.find().sort("_id", -1).limit(1).next()['_id']
+  try:
+    largest = tags.find().sort("_id", -1).limit(1).next()['_id']
 
-  logging.debug(f'Largest id already here {largest}')
+    logging.info(f'Largest id already here {largest}')
 
-  params['page'] = 'a' + str(largest)
+    params['page'] = 'a' + str(largest)
+  except StopIteration:
+    logging.info(f'Initializing Tags Collection')
 
   logging.info("Retrieving Tags")
 
@@ -72,7 +63,7 @@ async def get_tags(db: pymongo.database.Database):
   last_count = 320
   MAX_TAGS = int(os.getenv('MAX_TAGS'))
   # Get all Tags and insert in to MongoDB instance
-  while (count < MAX_TAGS) and (last_count == 320):
+  while ((count < MAX_TAGS) or (MAX_TAGS < 0)) and (last_count == 320):
     try:
       # Retrieve max number of tags possible
       response = requests.get(API_URL + TAGS_URL, auth=auth, headers=headers, params=params) #TODO Handle errors
@@ -87,21 +78,21 @@ async def get_tags(db: pymongo.database.Database):
     response = pd.DataFrame.from_dict(response.json())
     response.rename(columns={'id':'_id'}, inplace=True)
 
-    logging.debug(response.columns)
+    # logging.debug(response.columns)
 
     # Clean DataFrame a bit
-    response.drop(['related_tags', 'related_tags_updated_at','is_locked'], axis=1, inplace=True)
+    response.drop(['related_tags', 'related_tags_updated_at',
+                   'is_locked'], axis=1, inplace=True)
 
     logging.debug(f"Got {len(response)} records")
-    logging.debug(response.head())
+    # logging.debug(response.head())
 
+    # Insert into database (MongoDB)
     last_count = insert_records(response, tags)
 
-    # If MAX_TAGS unset then collect everything possible
-    if MAX_TAGS == 0:
-      count = -1
-    else:
-      count += last_count
+    count += last_count
+
+    logging.info(f"Retrieved {count} records so far.")
 
     #Update params with new page
     logging.debug(f"Last index retrieved {response['_id'].max()}")
@@ -121,7 +112,15 @@ async def get_posts(db: pymongo.database.Database):
   }
 
   posts = db.get_collection('posts')
-  # TODO Get largest post id from collection if it exists and continue from there
+  # Get largest post id from collection if it exists and continue from there
+  try:
+    largest = posts.find().sort("_id", -1).limit(1).next()['_id']
+
+    logging.info(f'Largest id already here {largest}')
+
+    params['page'] = 'a' + str(largest)
+  except StopIteration:
+    logging.info(f'Initializing Posts Collection')
 
   logging.info("Retrieving Posts")
 
@@ -129,7 +128,7 @@ async def get_posts(db: pymongo.database.Database):
   last_count = 320
   MAX_POSTS = int(os.getenv('MAX_POSTS'))
   # Get all posts and insert into MongoDB instance
-  while (count < MAX_POSTS) and (last_count == 320):
+  while ((count < MAX_POSTS) or (MAX_POSTS < 0)) and (last_count == 320):
     try:
       # Retrieve max number of posts possible
       response = requests.get(API_URL + POSTS_URL, auth=auth, headers=headers, params=params)
@@ -143,21 +142,44 @@ async def get_posts(db: pymongo.database.Database):
     # Create pandas df from result
     response = pd.DataFrame.from_dict(response.json()['posts'])
     response.rename(columns={'id':'_id'}, inplace=True)
-    
+
+    logging.debug(f"Got {len(response)} records")
+
     # Clean DataFrame
     clean_posts(response)
 
-    logging.debug("Retrieved {0} records".format(len(response)))
+    # Insert into database (MongoDB?)
+    # last_count = insert_records(response, posts)
 
-    #TODO Insert into database (MongoDB?)
-    break
+    count += last_count
+
+    logging.info(f"Retrieved {count} records so far.")
+
+    # Update params with new page
+    logging.debug(f"Last index retrieved {response['_id'].max()}")
+    params['page'] = 'a' + str(response['_id'].max())
     # Requests capped at 1/sec for "sustained period" so sleep for >= 1s
+
     await asyncio.sleep(1)
+    break;
 
     #Iterate if MAX_POSTS variable not reached or retrieved # is less than 320
 
 
   #TODO handle request code errors w/ recovery
+
+# Remove superfluous information from the json body returned
+def clean_posts(body: pd.DataFrame):
+  logging.debug(body.head())
+  body.drop(
+    ['sample', 'sources', 'pools', 
+     'relationships', 'approver_id',
+     'uploader_id', 'description', 
+     'comment_count', 'is_favorited', 
+     'has_notes', 'duration', 'preview',
+     'change_seq', 'flags', 'locked_tags'], axis=1, inplace=True)
+  logging.debug(body.columns)
+  logging.debug(f'\n{body["tags"].iloc[0]}')
 
 def insert_records(df: pd.DataFrame, collection: pymongo.collection.Collection):
   try:
