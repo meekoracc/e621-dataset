@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 import os
 import pymongo
 import pandas as pd
-import json
+import numpy as np
 
 API_URL='https://e621.net/'
 
@@ -84,8 +84,11 @@ async def get_tags(db: pymongo.database.Database):
 
     # logging.debug(response.columns)
 
+    # store_related(response['id','related_tags'])
+
     # Clean DataFrame a bit
-    response.drop(['related_tags', 'related_tags_updated_at',
+    response.drop(['related_tags',
+                   'related_tags_updated_at',
                    'is_locked'], axis=1, inplace=True)
 
     logging.debug(f"Got {len(response)} records")
@@ -96,13 +99,19 @@ async def get_tags(db: pymongo.database.Database):
 
     count += last_count
 
-    logging.info(f"Retrieved {count} records so far.")
+    logging.info(f"Retrieved {count} records so far...")
 
     #Update params with new page
     logging.debug(f"Last index retrieved {response['_id'].max()}")
     params['page'] = 'a' + str(response['_id'].max())
 
     await asyncio.sleep(1)
+  logging.info(f"Done fetching tags! {count} in total.")
+
+def store_related(df: pd.DataFrame):
+  #TODO make collection of tag relationships
+  
+  pass
 
 #################################
 ## Get Posts                   ##
@@ -154,10 +163,10 @@ async def get_posts(db: pymongo.database.Database):
     logging.debug(f"Got {len(response)} records")
 
     # Clean DataFrame
-    clean_posts(response)
+    response = clean_posts(response, db)
 
     # Insert into database (MongoDB?)
-    # last_count = insert_records(response, posts)
+    last_count = insert_records(response, posts)
 
     count += last_count
 
@@ -166,18 +175,16 @@ async def get_posts(db: pymongo.database.Database):
     # Update params with new page
     logging.debug(f"Last index retrieved {response['_id'].max()}")
     params['page'] = 'a' + str(response['_id'].max())
+
     # Requests capped at 1/sec for "sustained period" so sleep for >= 1s
-
     await asyncio.sleep(1)
-    break;
-
-    #Iterate if MAX_POSTS variable not reached or retrieved # is less than 320
+  logging.info(f"Done fetching posts! {count} in total.")
 
 
   #TODO handle request code errors w/ recovery
 
 # Remove superfluous information from the json body returned
-def clean_posts(body: pd.DataFrame):
+def clean_posts(body: pd.DataFrame, db: pymongo.database.Database):
   body.drop(
     ['sample', 'sources', 'pools', 
      'relationships', 'approver_id',
@@ -185,7 +192,6 @@ def clean_posts(body: pd.DataFrame):
      'comment_count', 'is_favorited', 
      'has_notes', 'duration', 'preview',
      'change_seq', 'flags', 'locked_tags'], axis=1, inplace=True)
-  logging.debug(body.columns)
 
   # Clean file part
   logging.debug(f'File:\n{body["file"].iloc[0]}')
@@ -195,8 +201,28 @@ def clean_posts(body: pd.DataFrame):
   body.drop(['file'], axis=1, inplace=True)
 
   #TODO: Clean and reduce tags (e.g. use id and separate by category)
+  tag_coll = db.get_collection('tags')
+
   logging.debug(f'Tags:\n{body["tags"].iloc[0]}')
   body['tags'] = body['tags'].astype(object)
+  categories = body['tags'].iloc[0].keys()
+  # Separate by category
+  for category in categories:
+    logging.debug(f'Getting {category} ids')
+    try:
+      body[category] = [sub[category] for sub in body['tags']]
+      # test_tag = body["tags"][0][category][0]
+      # logging.debug(f'Getting id of {test_tag}')
+      # logging.debug(f'{category} has {tag_coll.find_one({"name": test_tag})["_id"]}')
+      # body[category] = [[tag_coll.find_one({"name": tag}) for tag in sub[category]] for sub in body['tags']]
+      # logging.debug(f'{category} has {body[category][0]}')
+    except KeyError:
+      body[category] = None
+  body.drop(['tags'], axis=1, inplace=True)
+  logging.debug(body.head())
+  logging.debug(body.columns)
+  return body
+
 
 def insert_records(df: pd.DataFrame, collection: pymongo.collection.Collection):
   try:
@@ -218,7 +244,7 @@ async def main():
   auth = (os.getenv('USER_SIX_TWO_ONE'), os.getenv('KEY_SIX_TWO_ONE'))
 
   #Start logger
-  logging.basicConfig(datefmt='%m/%d/%Y %I:%M:%S %p', filename='retreival.log', filemode='w', level=logging.DEBUG)
+  logging.basicConfig(datefmt='%m/%d/%Y %I:%M:%S %p', filename='retreival.log', filemode='w', level=logging.INFO)
   logging.info('Starting Retrieval Task')
 
   #Connect to local mongo instance
